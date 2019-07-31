@@ -19,4 +19,6 @@ It's in its infancy right now so if you have any interest in it or questions of 
 
 Cheers!
 
+## License
 
+ISC, see [LICENSE](/LICENSE) for details.
