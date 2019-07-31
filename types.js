@@ -3,100 +3,144 @@ const {profile, enumerate} = require('./format')
 const episodeFixtures = require('./episodes')
 
 let CURRENT_EPISODE = 3
-const STATEMENT = {}
-const EPISODE = {}
-const DATE = {}
-const PERSON = {}
-const LOCATION = {}
-const ITEM = {}
-const THEME = {}
-const NAME = {}
+const statementStore = {}
+const episodeStore = {}
+const dateStore = {}
+const personStore = {}
+const locationStore = {}
+const itemStore = {}
+const themeStore = {}
+const nameStore = {}
 
-const ALL_NODES = {
-	statement: STATEMENT,
-	episode: EPISODE,
-	date: DATE,
-	person: PERSON,
-	location: LOCATION,
-	item: ITEM,
-	theme: THEME,
-	name: NAME,
-}
-
-const getCreateMap = (parent, key) => {
-	let map = parent.get(key)
-	if (!map) {
-		map = new Map()
-		parent.set(key, map)
-	}
-	return map
-}
-
-const getCreateArray = (parent, key) => {
-	let list = parent.get(key)
-	if (!list) {
-		list = []
-		parent.set(key, list)
-	}
-	return list
+const nodeStores = {
+	statement: statementStore,
+	episode: episodeStore,
+	date: dateStore,
+	person: personStore,
+	location: locationStore,
+	item: itemStore,
+	theme: themeStore,
+	name: nameStore,
 }
 
 class Node {
-	constructor({links, notes = '', type, id}) {
+	constructor({links, notes = '', type, id, buildCache = null}) {
 		this.id = id
 		this.notes = notes
 		this.type = type
-		if (!links) {
-			this.links = new Map()
-			return
+		// Not a default param so it can be checked explicitly
+		this.links = links || this.newCache()
+
+		// If buildCache or if there are links and buildCache !== false
+		if (buildCache || Boolean(links) !== buildCache) {
+			this.buildCache()
+		} else {
+			this.cache = this.newCache()
 		}
-		this.links = links
-		this.buildLinkCache()
 	}
 
+	newCache() {
+		return new Map(Node.linkTypes.map((type) => [type, new Map()]))
+	}
+
+	clearCache() {
+		this.cache = this.newCache()
+	}
+
+	// links: Map {
+	// 	names: => Map{ // Singular types
+	// 		1 => [],
+	// 		3 => [],
+	// 	},
+	// 	person => Map { // This episodeNumber => [] grouping is a cluster
+	// 		2 => [],
+	// 		3 => [],
+	// 	},
+	// 	// ...
+	// }
+
 	link(node, episodeNumber) {
-		const cluster = getCreateMap(this.links, episodeNumber)
-		const type = getCreateArray(cluster, node.type)
-		type.push(node)
-		this.buildLinkCache()
+		const cluster = this.links.get(node.type)
+
+		const list = this.getstablishEpisode(cluster, episodeNumber)
+		list.push(node)
+
+		cluster.set(episodeNumber, list)
+
 		return this
+	}
+
+	getstablishEpisode(cluster, episodeNumber) {
+		let list = cluster.get(episodeNumber)
+		if (!list) {
+			list = []
+			cluster.set(episodeNumber, list)
+		}
+		return list
 	}
 
 	interlink(node, episodeNumber) {
 		this.link(node, episodeNumber)
 		node.link(this, episodeNumber)
-		this.buildLinkCache()
 		return this
 	}
 
-	buildLinkCache() {
-		const linkTypes = Node.linkTypes
-		for (let i = 0; i <= CURRENT_EPISODE; i++) {
-			for (let type of linkTypes) {
-				let plural = type + 's'
-				if (i === 0) {
-					this[plural] = []
+	buildCache() {
+		this.cache = new Map()
+		for (let [type, cluster] of this.links) {
+			const newCluster = new Map()
+			this.cache.set(type, newCluster)
+			for (const [episodeNumber, list] of cluster) {
+				if (episodeNumber > CURRENT_EPISODE) {
+					break
 				}
-				let episodeLinks = this.links.get(i)
-
-				if (!episodeLinks) {
-					continue
-				}
-				episodeLinks = episodeLinks.get(type)
-				if (!episodeLinks) {
-					continue
-				}
-				this[plural] = this[plural].concat(episodeLinks)
-				if (i === CURRENT_EPISODE) {
-					Object.freeze(this[plural])
-				}
+				newCluster.set(episodeNumber, list)
 			}
 		}
 
+		// this.cache = new Map(this.links.entries.map(([type, cluster]) =>
+		// 	[
+		// 		type,
+		// 		cluster.entries.filter(([episodeNumber]) => episodeNumber <= CURRENT_EPISODE),
+		// 	]
+		// ))
 	}
+	// buildCache() {
+	// 	this.cache = new Map([...this.links.entries()].map(([type, cluster]) =>
+	// 		[
+	// 			type,
+	// 			[...cluster.entries()].filter(([episodeNumber]) => episodeNumber <= CURRENT_EPISODE),
+	// 		]
+	// 	))
+	// }
+
+	// sanitize() {
+	// 	this.cache = Object.freeze(new Map(this.links.entries.map(([type, cluster]) =>
+	// 		[
+	// 			type,
+	// 			Object.freeze(cluster.entries.reduce((cluster, [episodeNumber, list]) => {
+	// 				if (episodeNumber <= CURRENT_EPISODE) {
+	// 					cluster.set(episodeNumber, Object.freeze(list))
+	// 				}
+	// 			}, new Map())),
+	// 		]
+	// 	)))
+	// 	this.sanitized = true
+	// }
 }
 
 Node.linkTypes = ['statement', 'episode', 'date', 'person', 'location', 'item', 'theme', 'name']
+
+const getCacheGetter = (type) => function() {
+	return this.cache.get(type)
+}
+
+for (let type of Node.linkTypes) {
+	const plural = type + 's'
+	Object.defineProperty(Node.prototype, plural, {
+		get: getCacheGetter(type),
+	})
+}
 
 const typeMixin = (Base, type) => class extends Base {
 	constructor() {
@@ -126,7 +170,7 @@ class ArchiveDate extends typeMixin(Node, 'date') {
 }
 class Person extends typeMixin(Node, 'person') {
 	getPrimaryName() {
-		return this.links.get(EPISODE).get('name')[0]
+		return this.links.get(episodeStore).get('name')[0]
 	}
 }
 class Location extends typeMixin(Node, 'location') {}
@@ -145,21 +189,21 @@ const nodeClasses = {
 	name: Name,
 }
 
-const createPerson = ({person, name, episodeNumber}) => {
-	return new Person({notes: person}).interlink(new Name({notes: name}), episodeNumber)
-}
+// const createPerson = ({person, name, episodeNumber}) => {
+// 	return new Person({notes: person}).interlink(new Name({notes: name}), episodeNumber)
+// }
 
 const createEpisode = ({episodeNumber, newNodes = {}, nodes: interlinkNodes = {}}) => {
 	// Create and store episode
 	const episode = new Episode({id: episodeNumber, number: episodeNumber})
-	EPISODE[episodeNumber] = episode
+	episodeStore[episodeNumber] = episode
 	interlinkNodes = new Map([[episode, interlinkNodes]])
 	// Create new nodes of each type
-	for (const [type, nodesData] of Object.entries(newNodes)) {
-		const LIST = ALL_NODES[type]
+	for (const [type, list] of Object.entries(newNodes)) {
+		const store = nodeStores[type]
 		const NodeClass = nodeClasses[type]
 		// Create new nodes of this type
-		for (let nodeData of nodesData) {
+		for (let nodeData of list) {
 			// Create new node
 			const links = nodeData.links
 			nodeData.links = null
@@ -169,7 +213,8 @@ const createEpisode = ({episodeNumber, newNodes = {}, nodes: interlinkNodes = {}
 				interlinkNodes.set(newNode, links)
 			}
 			// Store in list
-			LIST[nodeData.id] = newNode
+			store[nodeData.id] = newNode
+
 			// Interlink with episode
 			episode.interlink(newNode, episodeNumber)
 		}
@@ -178,7 +223,7 @@ const createEpisode = ({episodeNumber, newNodes = {}, nodes: interlinkNodes = {}
 	// Interlink various nodes
 	for (const [node, lists] of interlinkNodes) {
 		for (const [type, nodeIds] of Object.entries(lists)) {
-			const LIST = ALL_NODES[type]
+			const LIST = nodeStores[type]
 			nodeIds.forEach((id) => {
 				node.interlink(LIST[id], episodeNumber)
 			})
@@ -193,27 +238,27 @@ const createEpisode = ({episodeNumber, newNodes = {}, nodes: interlinkNodes = {}
 createEpisode(episodeFixtures[1])
 
 const jonName = 'Jonathan Simms'
-const jon = PERSON[jonName]
-// const institute = LOCATION[instituteName]
-// const archives = LOCATION[archivesName]
+const jon = personStore[jonName]
+// const institute = locationList[instituteName]
+// const archives = locationList[archivesName]
 
-// jon.interlink(NAME[jonName], 1)
-// jon.interlink(STATEMENT['#0122204'], 1)
+// jon.interlink(nameList[jonName], 1)
+// jon.interlink(statementList['#0122204'], 1)
 
-// PERSON['Nathan Watts'].interlink(NAME['Nathan Watts'], 1)
-// PERSON['Nathan Watts'].interlink(STATEMENT['#0122204'], 1)
-// PERSON['Nathan Watts'].interlink(THEME['Angler Fish'], 1)
-// PERSON['Nathan Watts'].interlink(DATE['#0122204'], 1)
-// jon.interlink(PERSON['Nathan Watts'], 1)
-// DATE['#0122204'].interlink(STATEMENT['#0122204'], 1)
+// personList['Nathan Watts'].interlink(nameList['Nathan Watts'], 1)
+// personList['Nathan Watts'].interlink(statementList['#0122204'], 1)
+// personList['Nathan Watts'].interlink(themeList['Angler Fish'], 1)
+// personList['Nathan Watts'].interlink(dateList['#0122204'], 1)
+// jon.interlink(personList['Nathan Watts'], 1)
+// dateList['#0122204'].interlink(statementList['#0122204'], 1)
 
-// institute.interlink(NAME[instituteName], 1)
+// institute.interlink(nameList[instituteName], 1)
 // institute.interlink(jon, 1)
-// institute.interlink(STATEMENT['#0122204'], 1)
+// institute.interlink(statementList['#0122204'], 1)
 
-// archives.interlink(NAME[archivesName], 1)
+// archives.interlink(nameList[archivesName], 1)
 // archives.interlink(jon, 1)
-// archives.interlink(STATEMENT['#0122204'], 1)
+// archives.interlink(statementList['#0122204'], 1)
 // archives.interlink(institute, 1)
 
 for (let n = 2; n <= 10; n++) {
@@ -235,8 +280,8 @@ for (let n = 2; n <= 10; n++) {
 	})
 }
 
-// jon.interlink(STATEMENT['#33333333'], 3)
-// jon.interlink(NAME.Jon, 3)
+// jon.interlink(statementList['#33333333'], 3)
+// jon.interlink(nameList.Jon, 3)
 
 // const js2 = new Name({
 // 	notes: 'Johnathan Simms 2',
@@ -245,7 +290,7 @@ for (let n = 2; n <= 10; n++) {
 
 // TODO: Handle double interlinks
 
-// console.log(PERSON)
+// console.log(personList)
 // console.log(jon.links.get(1).get('name')[0].notes)
 // console.log(jon.getPrimaryName().notes)
 
@@ -253,25 +298,42 @@ console.log()
 console.log()
 let output = ''
 
-console.log(PERSON['Nathan Watts'])
-output += enumerate(PERSON['Nathan Watts'].statements[0].dates)
-// output += '\n'
-// output += enumerate([])
-// output += enumerate(PERSON['Nathan Watts'].location)
-// enumerate(PERSON['Jonathan Simms'].episode)
-// enumerate(PERSON['Jonathan Simms'].person[0].name)
-// console.log(PERSON['Nathan Watts'])
-// console.log(jon)
-// console.log('')
-output += '\n'
-output += enumerate(jon.statements)
-output += '\n'
-output += enumerate(jon.episodes)
-output += '\n'
+console.log(personStore['Nathan Watts'])
+console.log()
+console.log()
 // console.log()
-output += profile(jon)
+// console.log()
 
-console.log(output)
+jon.buildCache()
+// console.log()
+// console.log()
+console.log(jon)
+console.log()
+console.log()
+console.log()
+// console.log(jon.links)
+console.log(jon.cache)
+// // output += enumerate(personStore['Nathan Watts'].statements)
+// output += personStore['Nathan Watts'].statements
+// // output += '\n'
+// // output += enumerate([])
+// // output += enumerate(personStore['Nathan Watts'].location)
+// // enumerate(personStore['Jonathan Simms'].episode)
+// // enumerate(personStore['Jonathan Simms'].person[0].name)
+// // console.log(personStore['Nathan Watts'])
+// // console.log(jon)
+// // console.log('')
+// output += '\n'
+// // output += enumerate(jon.statements)
+// output += jon.statements
+// output += '\n'
+// // output += enumerate(jon.episodes)
+// output += jon.episodes
+// output += '\n'
+// // console.log()
+// // output += profile(jon)
+
+// console.log(output)
 
 /*
  *
